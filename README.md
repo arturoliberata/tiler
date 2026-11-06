@@ -1,6 +1,8 @@
-# tiler
+<p align="center"><img src="assets/logo-wordmark.svg" alt="tiler" height="96"></p>
 
 Arranges your windows into tiles. Up to 3 per monitor; any extra windows go full screen on the laptop screen.
+
+<p align="center"><img src="assets/setup.svg" alt="External monitor with 3 tiles; laptop screen with 4 windows stacked full screen" width="100%"></p>
 
 ## Install
 
