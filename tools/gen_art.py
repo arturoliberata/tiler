@@ -24,7 +24,7 @@ def window(x, y, w, h, body, bar, title_w=None, lines=3, shadow=True, badge=None
     return "\n".join(s)
 
 def setup_svg():
-    W, H = 1200, 600
+    W, H = 1200, 560
     out = [f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {W} {H}" width="{W}" height="{H}">',
            '<defs><linearGradient id="bg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#16213a"/><stop offset="1" stop-color="#0b1220"/></linearGradient>'
            '<linearGradient id="scr" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#1b2a4a"/><stop offset="1" stop-color="#0f1a30"/></linearGradient></defs>',
@@ -58,12 +58,7 @@ def setup_svg():
     for k, (body, bar) in enumerate(cols):
         off = (3 - k) * 7
         out.append(window(psx + 8 + off, psy + 8 + (3 - k) * 0 + (k) * 7 - 0, ww, wh, body, bar,
-                          lines=6, badge="4 stacked" if k == 3 else None))
-    # captions
-    out.append(f'<text x="{cx}" y="548" text-anchor="middle" font-size="22" font-weight="600" fill="#e2e8f0" {FONT}>External monitor</text>')
-    out.append(f'<text x="{cx}" y="574" text-anchor="middle" font-size="16" fill="#94a3b8" {FONT}>up to 3 tiles</text>')
-    out.append(f'<text x="{lx+lw/2}" y="548" text-anchor="middle" font-size="22" font-weight="600" fill="#e2e8f0" {FONT}>Laptop screen</text>')
-    out.append(f'<text x="{lx+lw/2}" y="574" text-anchor="middle" font-size="16" fill="#94a3b8" {FONT}>overflow, stacked full screen</text>')
+                          lines=6, badge=None))
     out.append('</svg>')
     return "\n".join(out)
 
