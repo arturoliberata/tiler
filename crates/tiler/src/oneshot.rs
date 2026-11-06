@@ -55,6 +55,8 @@ pub fn arrange(config: &Config) -> usize {
     model.overflow_mode = OverflowMode::Stack;
     model.stack_monitor = app::resolve_stack_monitor(config);
     model.stack_monitor_always = config.laptop_stack;
+    model.stack_style = config.stack_style;
+    model.cascade_offset = config.cascade_offset;
     let rules = config.rule_set();
 
     // EnumWindows is topmost-first; insert bottom-up (oldest first).
@@ -101,6 +103,15 @@ pub fn arrange(config: &Config) -> usize {
         std::thread::sleep(Duration::from_millis(150));
         for (w, r) in crossed {
             window::place(w, r);
+        }
+    }
+    // Make the z-order match the cascade: back windows first, the newest (the one that
+    // was on top, since windows were added bottom-up) ends up in front.
+    for i in 0..model.monitors.len() {
+        if model.is_stacked(i, 0) {
+            for w in model.stack_order(i, 0) {
+                window::raise(w);
+            }
         }
     }
     for (i, m) in model.monitors.iter().enumerate() {

@@ -32,6 +32,7 @@ Edit `%APPDATA%\tiler\config.toml`. The ones you're most likely to change:
 ```toml
 max_tiles = 3       # windows per monitor before the rest go full screen on the laptop
 laptop_layout = "tile"   # "stack" = laptop screen always shows windows full screen, stacked
+stack_style = "cascade"  # stacked windows offset so every title bar shows; "full" = exactly on top
 [gaps]
 outer = 8
 inner = 8

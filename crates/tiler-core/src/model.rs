@@ -67,6 +67,16 @@ pub enum OverflowMode {
     Stack,
 }
 
+/// How a stacked workspace places its windows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum StackStyle {
+    /// Every window exactly full screen, on top of each other.
+    Full,
+    /// Classic cascade: each newer window offset down and right, so every title bar shows.
+    #[default]
+    Cascade,
+}
+
 /// Result of `Model::add`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Added {
@@ -96,6 +106,13 @@ pub struct Model<W> {
     pub stack_monitor: Option<String>,
     /// The stack monitor never tiles: any workspace there with 2+ windows is stacked.
     pub stack_monitor_always: bool,
+    pub stack_style: StackStyle,
+    /// Cascade step in pixels (shrunk automatically when many windows are stacked).
+    pub cascade_offset: i32,
+    /// Order in which windows were placed in their current workspace; the cascade puts
+    /// older windows at the back (top-left) and newer ones at the front.
+    seq: HashMap<W, u64>,
+    next_seq: u64,
     locs: HashMap<W, Loc>,
     mins: MinSizes<W>,
     ws_count: usize,
@@ -118,6 +135,10 @@ impl<W: Copy + Eq + Hash + Debug> Model<W> {
             overflow_mode: OverflowMode::NextWorkspace,
             stack_monitor: None,
             stack_monitor_always: false,
+            stack_style: StackStyle::Full,
+            cascade_offset: 40,
+            seq: HashMap::new(),
+            next_seq: 0,
             locs: HashMap::new(),
             mins: HashMap::new(),
             ws_count,
@@ -168,13 +189,32 @@ impl<W: Copy + Eq + Hash + Debug> Model<W> {
     pub fn ws_layout(&self, monitor: usize, workspace: usize) -> Vec<(W, Rect)> {
         let m = &self.monitors[monitor];
         match &m.workspaces[workspace].tree {
-            Some(t) if self.is_stacked(monitor, workspace) => {
+            Some(_) if self.is_stacked(monitor, workspace) => {
                 let full = m.area.inset(self.gaps.outer);
-                t.leaves().into_iter().map(|w| (w, full)).collect()
+                let order = self.stack_order(monitor, workspace);
+                if self.stack_style == StackStyle::Full {
+                    return order.into_iter().map(|w| (w, full)).collect();
+                }
+                cascade(full, self.cascade_offset, order.len())
+                    .into_iter()
+                    .zip(order)
+                    .map(|(r, w)| (w, r))
+                    .collect()
             }
             Some(t) => tree::layout(t, m.area, self.gaps, &self.mins),
             None => Vec::new(),
         }
+    }
+
+    /// Tiled windows of a workspace from back (oldest) to front (newest).
+    pub fn stack_order(&self, monitor: usize, workspace: usize) -> Vec<W> {
+        let mut v = self.monitors[monitor].workspaces[workspace]
+            .tree
+            .as_ref()
+            .map(|t| t.leaves())
+            .unwrap_or_default();
+        v.sort_by_key(|w| self.seq.get(w).copied().unwrap_or(0));
+        v
     }
 
     /// More tiled windows than `max_tiles`: every window is shown full screen.
@@ -341,6 +381,8 @@ impl<W: Copy + Eq + Hash + Debug> Model<W> {
     /// Does not check capacity.
     fn attach(&mut self, w: W, loc: Loc) {
         self.locs.insert(w, loc);
+        self.next_seq += 1;
+        self.seq.insert(w, self.next_seq);
         if loc.floating {
             self.ws_mut(loc).floating.push(w);
         } else {
@@ -426,6 +468,7 @@ impl<W: Copy + Eq + Hash + Debug> Model<W> {
     /// Stop managing `w` entirely.
     pub fn remove(&mut self, w: W) -> bool {
         self.mins.remove(&w);
+        self.seq.remove(&w);
         self.detach(w).is_some()
     }
 
@@ -491,7 +534,7 @@ impl<W: Copy + Eq + Hash + Debug> Model<W> {
         if l.floating || !self.is_stacked(l.monitor, l.workspace) {
             return None;
         }
-        let leaves = self.ws(l).tree.as_ref()?.leaves();
+        let leaves = self.stack_order(l.monitor, l.workspace);
         let i = leaves.iter().position(|w| *w == f)?;
         let n = leaves.len();
         let next = leaves[if forward {
@@ -759,6 +802,23 @@ impl<W: Copy + Eq + Hash + Debug> Model<W> {
     pub fn monitor_index(&self, id: &str) -> Option<usize> {
         self.monitors.iter().position(|m| m.id == id)
     }
+}
+
+/// Rectangles for `n` cascaded windows inside `area`, back to front. The step shrinks
+/// when needed so every window keeps at least 60% of the area in each dimension.
+pub fn cascade(area: Rect, offset: i32, n: usize) -> Vec<Rect> {
+    if n <= 1 {
+        return vec![area; n];
+    }
+    let k = (n - 1) as i32;
+    let step = offset
+        .max(0)
+        .min(area.w * 2 / 5 / k)
+        .min(area.h * 2 / 5 / k);
+    let (w, h) = (area.w - k * step, area.h - k * step);
+    (0..n as i32)
+        .map(|i| Rect::new(area.x + i * step, area.y + i * step, w, h))
+        .collect()
 }
 
 #[cfg(test)]
@@ -1092,7 +1152,7 @@ mod tests {
             m.add(w, 1, None, false);
         }
         m.set_focus(4);
-        let order = m.monitors[1].workspaces[0].tree.as_ref().unwrap().leaves();
+        let order = m.stack_order(1, 0);
         let i = order.iter().position(|w| *w == 4).unwrap();
         let n = order.len();
         assert_eq!(m.focus_dir(Direction::Down), Some(order[(i + 1) % n]));
@@ -1151,6 +1211,37 @@ mod tests {
         m.remove(1);
         m.remove(2);
         assert!(!m.is_stacked(1, 0));
+    }
+
+    #[test]
+    fn stack_cascades_oldest_at_back() {
+        let mut m = laptop_setup();
+        m.stack_monitor_always = true;
+        m.stack_style = StackStyle::Cascade;
+        m.cascade_offset = 40;
+        for w in [7, 8, 9] {
+            m.add(w, 1, None, false);
+        }
+        assert_eq!(m.stack_order(1, 0), vec![7, 8, 9]);
+        // Laptop area 1000x600 at x=2000: steps of 40, each window 920x520.
+        assert_eq!(m.slot(7), Some(Rect::new(2000, 0, 920, 520)));
+        assert_eq!(m.slot(8), Some(Rect::new(2040, 40, 920, 520)));
+        assert_eq!(m.slot(9), Some(Rect::new(2080, 80, 920, 520)));
+        // Cycling follows the cascade order.
+        m.set_focus(9);
+        assert_eq!(m.focus_dir(Direction::Down), Some(7));
+    }
+
+    #[test]
+    fn cascade_step_shrinks_with_many_windows() {
+        let r = cascade(Rect::new(0, 0, 1000, 600), 40, 11);
+        assert_eq!(r.len(), 11);
+        // 600 * 0.4 / 10 = 24 px step; the front window keeps 60% of the height.
+        assert_eq!(r[10], Rect::new(240, 240, 760, 360));
+        assert_eq!(
+            cascade(Rect::new(0, 0, 100, 100), 40, 1),
+            vec![Rect::new(0, 0, 100, 100)]
+        );
     }
 
     #[test]

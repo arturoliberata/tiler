@@ -72,6 +72,8 @@ impl App {
         model.overflow_mode = config.overflow;
         model.stack_monitor = resolve_stack_monitor(&config);
         model.stack_monitor_always = config.laptop_stack;
+        model.stack_style = config.stack_style;
+        model.cascade_offset = config.cascade_offset;
         for (i, m) in model.monitors.iter().enumerate() {
             info!("monitor {i}: {} work area {:?}", m.id, m.area);
         }
@@ -533,6 +535,8 @@ impl App {
                 self.model.overflow_mode = cfg.overflow;
                 self.model.stack_monitor = resolve_stack_monitor(&cfg);
                 self.model.stack_monitor_always = cfg.laptop_stack;
+                self.model.stack_style = cfg.stack_style;
+                self.model.cascade_offset = cfg.cascade_offset;
                 log_stack_monitor(&self.model);
                 self.config = cfg;
                 self.register_hotkeys();

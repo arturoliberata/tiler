@@ -229,6 +229,21 @@ pub fn unmaximize(h: Hwnd) {
     }
 }
 
+/// Bring to the top of the z-order without activating or moving it.
+pub fn raise(h: Hwnd) {
+    unsafe {
+        let _ = SetWindowPos(
+            h.raw(),
+            Some(HWND_TOP),
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE, // synchronous, so the order sticks
+        );
+    }
+}
+
 pub fn hide(h: Hwnd) {
     unsafe {
         let _ = ShowWindow(h.raw(), SW_HIDE);

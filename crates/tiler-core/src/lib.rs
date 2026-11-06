@@ -15,5 +15,5 @@ pub mod tree;
 pub use command::Command;
 pub use config::Config;
 pub use geom::{Axis, Direction, Rect};
-pub use model::{Added, InsertMode, Loc, Model, OverflowMode, Target};
+pub use model::{Added, InsertMode, Loc, Model, OverflowMode, StackStyle, Target};
 pub use tree::{Gaps, Node};

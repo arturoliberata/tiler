@@ -4,7 +4,7 @@ use serde::Deserialize;
 
 use crate::command::Command;
 use crate::hotkey::{self, Hotkey};
-use crate::model::{InsertMode, OverflowMode};
+use crate::model::{InsertMode, OverflowMode, StackStyle};
 use crate::rules::{RuleSet, RuleSpec};
 use crate::tree::Gaps;
 
@@ -36,6 +36,13 @@ stack_monitor = "auto"
 #   "tile"  - tiles like any monitor; stacks only when it has more than max_tiles
 #   "stack" - always full screen and stacked
 laptop_layout = "tile"
+
+# How stacked windows are shown:
+#   "cascade" - each window offset down and right, so every title bar is visible
+#   "full"    - all exactly full screen, on top of each other
+stack_style = "cascade"
+# Cascade step in pixels.
+cascade_offset = 40
 
 # Which tile a new window splits: "largest" (balanced, 4 windows = 2x2 grid)
 # or "focused" (the focused tile is halved each time).
@@ -120,6 +127,8 @@ struct RawConfig {
     overflow: Option<String>,
     stack_monitor: Option<String>,
     laptop_layout: Option<String>,
+    stack_style: Option<String>,
+    cascade_offset: Option<i32>,
     resize_step: Option<f32>,
     gaps: Option<GapsConfig>,
     keys: Option<BTreeMap<String, String>>,
@@ -136,6 +145,8 @@ pub struct Config {
     pub stack_monitor: String,
     /// `laptop_layout = "stack"`: the stack monitor always stacks.
     pub laptop_stack: bool,
+    pub stack_style: StackStyle,
+    pub cascade_offset: i32,
     pub resize_step: f32,
     pub gaps: Gaps,
     pub keys: BTreeMap<String, String>,
@@ -207,6 +218,20 @@ impl Config {
                 }
                 None => base.as_ref().is_some_and(|b| b.laptop_stack),
             },
+            stack_style: match raw.stack_style.as_deref() {
+                Some("cascade") => StackStyle::Cascade,
+                Some("full") => StackStyle::Full,
+                Some(other) => {
+                    return Err(format!(
+                        "stack_style must be \"cascade\" or \"full\", not \"{other}\""
+                    ))
+                }
+                None => base.as_ref().map_or(StackStyle::Cascade, |b| b.stack_style),
+            },
+            cascade_offset: raw
+                .cascade_offset
+                .or(base.as_ref().map(|b| b.cascade_offset))
+                .unwrap_or(40),
             resize_step: raw
                 .resize_step
                 .or(base.as_ref().map(|b| b.resize_step))
@@ -238,6 +263,9 @@ impl Config {
         }
         if self.max_tiles > 64 {
             return Err("max_tiles must be between 0 (unlimited) and 64".into());
+        }
+        if !(0..=200).contains(&self.cascade_offset) {
+            return Err("cascade_offset must be between 0 and 200".into());
         }
         if !(0.01..=0.5).contains(&self.resize_step) {
             return Err("resize_step must be between 0.01 and 0.5".into());
@@ -285,6 +313,14 @@ mod tests {
         assert_eq!(c.overflow, OverflowMode::Stack);
         assert_eq!(c.stack_monitor, "auto");
         assert!(!c.laptop_stack);
+        assert_eq!(c.stack_style, StackStyle::Cascade);
+        assert_eq!(c.cascade_offset, 40);
+        assert_eq!(
+            Config::parse("stack_style = \"full\"").unwrap().stack_style,
+            StackStyle::Full
+        );
+        assert!(Config::parse("stack_style = \"pile\"").is_err());
+        assert!(Config::parse("cascade_offset = 500").is_err());
         assert!(
             Config::parse("laptop_layout = \"stack\"")
                 .unwrap()
