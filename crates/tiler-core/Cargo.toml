@@ -1,0 +1,11 @@
+[package]
+name = "tiler-core"
+description = "Platform-independent logic for the tiler window manager: BSP layout, model, config, rules."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+regex = "1"

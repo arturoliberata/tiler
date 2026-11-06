@@ -1,0 +1,349 @@
+//! tiler: an automatic BSP tiling window manager for Windows.
+
+mod app;
+mod events;
+mod journal;
+mod monitors;
+mod oneshot;
+mod window;
+
+use std::fmt;
+use std::path::PathBuf;
+
+use tracing::{error, info, warn};
+use tracing_subscriber::filter::LevelFilter;
+use tracing_subscriber::prelude::*;
+use windows::core::BOOL;
+use windows::Win32::Foundation::{HWND, LPARAM, RECT, WPARAM};
+use windows::Win32::System::Console::SetConsoleCtrlHandler;
+use windows::Win32::UI::HiDpi::{
+    SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
+};
+use windows::Win32::UI::WindowsAndMessaging::{
+    DispatchMessageW, GetMessageW, PostThreadMessageW, TranslateMessage, MSG, WM_HOTKEY,
+};
+
+use tiler_core::config::DEFAULT_CONFIG;
+use tiler_core::{Config, Rect};
+
+use crate::app::App;
+use crate::events::{Event, Hooks, WM_APP_QUIT};
+use crate::journal::Journal;
+
+/// A window handle that is `Send`, `Hash` and printable. Only ever dereferenced through Win32.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Hwnd(pub isize);
+
+impl Hwnd {
+    pub fn raw(self) -> HWND {
+        HWND(self.0 as *mut _)
+    }
+}
+
+impl From<HWND> for Hwnd {
+    fn from(h: HWND) -> Self {
+        Hwnd(h.0 as isize)
+    }
+}
+
+impl fmt::Debug for Hwnd {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:#x}", self.0)
+    }
+}
+
+pub fn rect_from(r: RECT) -> Rect {
+    Rect::from_ltrb(r.left, r.top, r.right, r.bottom)
+}
+
+fn dir_from_env(var: &str) -> PathBuf {
+    let base = std::env::var_os(var)
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."));
+    let dir = base.join("tiler");
+    let _ = std::fs::create_dir_all(&dir);
+    dir
+}
+
+const HELP: &str = "tiler: tiling window manager for Windows
+
+USAGE: tiler [OPTION]
+
+  (none)            run the window manager (stays running, reacts to every window)
+  --once            arrange the windows open right now, then exit (nothing keeps running)
+  --listen [KEY]    start a tiny background listener: KEY (default Win+Y, else Win+J)
+                    arranges windows like --once. Returns immediately.
+  --stop            stop the background listener
+  --autostart [KEY] start the listener now and at every logon
+  --no-autostart    remove it from logon
+  --list            show every top-level window and whether it would be managed
+  --monitors        show monitors, their device names, and which is the laptop screen
+  --restore         show any windows a crashed run left hidden, then exit
+  --default-config  print the default configuration
+  --verbose         debug logging
+  --help            this text
+
+Config: %APPDATA%\\tiler\\config.toml (created on first run)
+Log:    %LOCALAPPDATA%\\tiler\\tiler.log";
+
+fn main() {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let has = |f: &str| args.iter().any(|a| a == f);
+    let value_after = |f: &str| {
+        args.iter()
+            .position(|a| a == f)
+            .and_then(|i| args.get(i + 1))
+            .filter(|v| !v.starts_with("--"))
+            .cloned()
+    };
+    if has("--help") || has("-h") {
+        println!("{HELP}");
+        return;
+    }
+    if has("--default-config") {
+        print!("{DEFAULT_CONFIG}");
+        return;
+    }
+
+    let data_dir = dir_from_env("LOCALAPPDATA");
+    let journal = Journal::new(data_dir.join("hidden.json"));
+
+    // All coordinates are physical pixels on every monitor.
+    unsafe {
+        let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+    }
+
+    if has("--restore") {
+        println!("restored {} window(s)", journal.restore_previous());
+        return;
+    }
+    if has("--list") {
+        list_windows();
+        return;
+    }
+    if has("--monitors") {
+        list_monitors();
+        return;
+    }
+    if has("--stop") {
+        if oneshot::stop_listener() {
+            println!("listener stopped");
+        } else {
+            println!("no listener is running");
+        }
+        return;
+    }
+    if has("--no-autostart") {
+        let removed = oneshot::clear_autostart();
+        println!(
+            "{}",
+            if removed {
+                "removed from logon"
+            } else {
+                "was not set to start at logon"
+            }
+        );
+        return;
+    }
+    if has("--listen") || has("--autostart") {
+        let flag = if has("--autostart") {
+            "--autostart"
+        } else {
+            "--listen"
+        };
+        let requested = value_after(flag);
+        let key = match oneshot::start_listener(requested.as_deref()) {
+            Ok(key) => {
+                println!("listening in the background: press {key} to arrange windows");
+                println!("stop with `tiler --stop`");
+                key
+            }
+            Err(e) if flag == "--autostart" && e.contains("already running") => {
+                println!("{e}");
+                match oneshot::pick_key(requested.as_deref()) {
+                    Ok(k) => k,
+                    Err(_) => requested.unwrap_or_else(|| "win+y".into()),
+                }
+            }
+            Err(e) => {
+                eprintln!("{e}");
+                return;
+            }
+        };
+        if flag == "--autostart" {
+            match oneshot::set_autostart(&key) {
+                Ok(()) => {
+                    println!("will also start at every logon (undo with `tiler --no-autostart`)")
+                }
+                Err(e) => eprintln!("{e}"),
+            }
+        }
+        return;
+    }
+
+    let level = if has("--verbose") {
+        LevelFilter::DEBUG
+    } else {
+        LevelFilter::INFO
+    };
+    let (file_writer, _guard) =
+        tracing_appender::non_blocking(tracing_appender::rolling::never(&data_dir, "tiler.log"));
+    tracing_subscriber::registry()
+        .with(
+            tracing_subscriber::fmt::layer()
+                .with_writer(file_writer)
+                .with_ansi(false)
+                .with_filter(level),
+        )
+        .with(
+            tracing_subscriber::fmt::layer()
+                .with_writer(std::io::stderr)
+                .with_filter(level),
+        )
+        .init();
+
+    let restored = journal.restore_previous();
+    if restored > 0 {
+        warn!("restored {restored} window(s) left hidden by a previous run");
+    }
+
+    std::panic::set_hook(Box::new(|p| {
+        journal::restore_from_global();
+        error!("panic: {p}");
+        eprintln!("tiler panicked: {p}\nAll hidden windows were restored.");
+    }));
+
+    let config_path = dir_from_env("APPDATA").join("config.toml");
+    let config = load_config(&config_path);
+
+    if has("--once") {
+        let n = oneshot::arrange(&config);
+        println!("arranged {n} window(s)");
+        return;
+    }
+    if let Some(key) = value_after("--listen-child") {
+        oneshot::run_listener(&key, &config_path);
+        return;
+    }
+
+    events::set_main_thread();
+    unsafe {
+        let _ = SetConsoleCtrlHandler(Some(console_handler), true);
+    }
+
+    let msg_window = match events::create_hidden_window() {
+        Ok(h) => Hwnd::from(h),
+        Err(e) => {
+            error!("could not create message window: {e}");
+            return;
+        }
+    };
+
+    let mut app = App::new(config, config_path, journal, msg_window);
+    app.register_hotkeys();
+    let hooks = Hooks::install();
+    app.manage_existing();
+    info!(
+        "running; Alt+Shift+Q (default) or Ctrl+C to quit\n{}",
+        app.dump_state()
+    );
+
+    let mut msg = MSG::default();
+    loop {
+        let r = unsafe { GetMessageW(&mut msg, None, 0, 0) };
+        if r.0 <= 0 {
+            break;
+        }
+        match msg.message {
+            WM_HOTKEY => events::push(Event::Hotkey(msg.wParam.0 as i32)),
+            WM_APP_QUIT => events::push(Event::Quit),
+            _ => unsafe {
+                let _ = TranslateMessage(&msg);
+                DispatchMessageW(&msg);
+            },
+        }
+        while let Some(e) = events::pop() {
+            if events::quitting() {
+                break;
+            }
+            app.handle(e);
+        }
+        if app.quit || events::quitting() {
+            break;
+        }
+    }
+
+    drop(hooks);
+    app.shutdown();
+}
+
+pub(crate) fn load_config(path: &std::path::Path) -> Config {
+    if !path.exists() {
+        match std::fs::write(path, DEFAULT_CONFIG) {
+            Ok(()) => info!("wrote default config to {}", path.display()),
+            Err(e) => warn!("could not write default config: {e}"),
+        }
+        return Config::default();
+    }
+    let text = std::fs::read_to_string(path).unwrap_or_default();
+    Config::parse(&text).unwrap_or_else(|e| {
+        error!("{}: {e}; using built-in defaults", path.display());
+        Config::default()
+    })
+}
+
+/// Runs on a separate thread for Ctrl+C, Ctrl+Break and closing the console.
+/// Restore synchronously: for a console close, Windows kills us shortly after this returns.
+unsafe extern "system" fn console_handler(_ctrl_type: u32) -> BOOL {
+    events::request_quit();
+    journal::restore_from_global();
+    unsafe {
+        let _ = PostThreadMessageW(events::main_thread(), WM_APP_QUIT, WPARAM(0), LPARAM(0));
+    }
+    BOOL(1)
+}
+
+fn list_windows() {
+    let ctx = window::Ctx::new();
+    println!(
+        "{:<10} {:<22} {:<24} {:<30} TITLE",
+        "HWND", "RESULT", "EXE", "CLASS"
+    );
+    for h in window::top_level_windows() {
+        let info = window::info(h);
+        let result = match window::classify(h, &info, &ctx) {
+            Ok(window::Kind::Tile) => "TILE".to_string(),
+            Ok(window::Kind::Float) => "FLOAT".to_string(),
+            Err(reason) => {
+                if reason == "not visible" {
+                    continue; // hundreds of these; not interesting
+                }
+                format!("skip: {reason}")
+            }
+        };
+        let title: String = info.title.chars().take(60).collect();
+        println!(
+            "{:<10} {:<22} {:<24} {:<30} {}",
+            format!("{h:?}"),
+            result,
+            info.exe,
+            info.class,
+            title
+        );
+    }
+}
+
+fn list_monitors() {
+    let internal = monitors::internal_ids();
+    for (i, m) in monitors::all().iter().enumerate() {
+        let tag = if internal.contains(&m.id) {
+            "  built-in (laptop)"
+        } else {
+            ""
+        };
+        println!(
+            "{i}  {:<14} {}x{} at ({}, {}){tag}",
+            m.id, m.full.w, m.full.h, m.full.x, m.full.y
+        );
+    }
+}
