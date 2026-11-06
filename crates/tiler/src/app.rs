@@ -71,6 +71,7 @@ impl App {
         model.insert_mode = config.insert;
         model.overflow_mode = config.overflow;
         model.stack_monitor = resolve_stack_monitor(&config);
+        model.stack_monitor_always = config.laptop_stack;
         for (i, m) in model.monitors.iter().enumerate() {
             info!("monitor {i}: {} work area {:?}", m.id, m.area);
         }
@@ -531,6 +532,7 @@ impl App {
                 self.model.insert_mode = cfg.insert;
                 self.model.overflow_mode = cfg.overflow;
                 self.model.stack_monitor = resolve_stack_monitor(&cfg);
+                self.model.stack_monitor_always = cfg.laptop_stack;
                 log_stack_monitor(&self.model);
                 self.config = cfg;
                 self.register_hotkeys();

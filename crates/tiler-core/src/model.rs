@@ -94,6 +94,8 @@ pub struct Model<W> {
     /// Monitor id that receives overflow in `OverflowMode::Stack`. `None` (or not
     /// connected): each monitor stacks its own overflow.
     pub stack_monitor: Option<String>,
+    /// The stack monitor never tiles: any workspace there with 2+ windows is stacked.
+    pub stack_monitor_always: bool,
     locs: HashMap<W, Loc>,
     mins: MinSizes<W>,
     ws_count: usize,
@@ -115,6 +117,7 @@ impl<W: Copy + Eq + Hash + Debug> Model<W> {
             insert_mode: InsertMode::Focused,
             overflow_mode: OverflowMode::NextWorkspace,
             stack_monitor: None,
+            stack_monitor_always: false,
             locs: HashMap::new(),
             mins: HashMap::new(),
             ws_count,
@@ -176,7 +179,9 @@ impl<W: Copy + Eq + Hash + Debug> Model<W> {
 
     /// More tiled windows than `max_tiles`: every window is shown full screen.
     pub fn is_stacked(&self, monitor: usize, workspace: usize) -> bool {
-        self.max_tiles > 0 && self.tile_count(monitor, workspace) > self.max_tiles
+        let n = self.tile_count(monitor, workspace);
+        (self.max_tiles > 0 && n > self.max_tiles)
+            || (self.stack_monitor_always && n > 1 && self.is_stack_monitor(monitor))
     }
 
     /// Index of the monitor that takes overflow in stack mode, if it is connected.
@@ -1125,6 +1130,27 @@ mod tests {
         }
         assert!(m.is_stacked(0, 0));
         assert_eq!(m.tile_count(0, 0), 5);
+    }
+
+    #[test]
+    fn laptop_can_always_stack() {
+        let mut m = laptop_setup();
+        m.stack_monitor_always = true;
+        m.add(1, 1, None, false);
+        assert!(!m.is_stacked(1, 0)); // one window: just full screen
+        m.add(2, 1, None, false);
+        assert!(m.is_stacked(1, 0));
+        assert_eq!(m.slot(1), m.slot(2));
+        // External monitor still tiles, and overflow still lands on the laptop stack.
+        for w in 3..=6 {
+            m.add(w, 0, None, false);
+        }
+        assert!(!m.is_stacked(0, 0));
+        assert_eq!(m.loc(6).unwrap().monitor, 1);
+        assert_eq!(m.tile_count(1, 0), 3);
+        m.remove(1);
+        m.remove(2);
+        assert!(!m.is_stacked(1, 0));
     }
 
     #[test]

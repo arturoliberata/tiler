@@ -32,6 +32,11 @@ overflow = "laptop-stack"
 # (lid closed, desktop PC), each monitor stacks its own overflow.
 stack_monitor = "auto"
 
+# How the stack monitor (laptop screen) shows its windows:
+#   "tile"  - tiles like any monitor; stacks only when it has more than max_tiles
+#   "stack" - always full screen and stacked
+laptop_layout = "tile"
+
 # Which tile a new window splits: "largest" (balanced, 4 windows = 2x2 grid)
 # or "focused" (the focused tile is halved each time).
 insert = "largest"
@@ -114,6 +119,7 @@ struct RawConfig {
     insert: Option<String>,
     overflow: Option<String>,
     stack_monitor: Option<String>,
+    laptop_layout: Option<String>,
     resize_step: Option<f32>,
     gaps: Option<GapsConfig>,
     keys: Option<BTreeMap<String, String>>,
@@ -128,6 +134,8 @@ pub struct Config {
     pub overflow: OverflowMode,
     /// "auto" or a monitor device name.
     pub stack_monitor: String,
+    /// `laptop_layout = "stack"`: the stack monitor always stacks.
+    pub laptop_stack: bool,
     pub resize_step: f32,
     pub gaps: Gaps,
     pub keys: BTreeMap<String, String>,
@@ -189,6 +197,16 @@ impl Config {
                 .stack_monitor
                 .or(base.as_ref().map(|b| b.stack_monitor.clone()))
                 .unwrap_or_else(|| "auto".into()),
+            laptop_stack: match raw.laptop_layout.as_deref() {
+                Some("stack") => true,
+                Some("tile") => false,
+                Some(other) => {
+                    return Err(format!(
+                        "laptop_layout must be \"tile\" or \"stack\", not \"{other}\""
+                    ))
+                }
+                None => base.as_ref().is_some_and(|b| b.laptop_stack),
+            },
             resize_step: raw
                 .resize_step
                 .or(base.as_ref().map(|b| b.resize_step))
@@ -266,6 +284,13 @@ mod tests {
         assert_eq!(c.max_tiles, 3);
         assert_eq!(c.overflow, OverflowMode::Stack);
         assert_eq!(c.stack_monitor, "auto");
+        assert!(!c.laptop_stack);
+        assert!(
+            Config::parse("laptop_layout = \"stack\"")
+                .unwrap()
+                .laptop_stack
+        );
+        assert!(Config::parse("laptop_layout = \"grid\"").is_err());
         assert_eq!(c.insert, InsertMode::Largest);
         assert_eq!(c.gaps, Gaps { outer: 8, inner: 8 });
         let b = c.bindings().unwrap();

@@ -54,6 +54,7 @@ pub fn arrange(config: &Config) -> usize {
     model.insert_mode = config.insert;
     model.overflow_mode = OverflowMode::Stack;
     model.stack_monitor = app::resolve_stack_monitor(config);
+    model.stack_monitor_always = config.laptop_stack;
     let rules = config.rule_set();
 
     // EnumWindows is topmost-first; insert bottom-up (oldest first).
