@@ -13,9 +13,13 @@ use std::path::PathBuf;
 use tracing::{error, info, warn};
 use tracing_subscriber::filter::LevelFilter;
 use tracing_subscriber::prelude::*;
-use windows::core::BOOL;
-use windows::Win32::Foundation::{HWND, LPARAM, RECT, WPARAM};
+use windows::core::{w, BOOL, PCWSTR};
+use windows::Win32::Foundation::{
+    CloseHandle, GetLastError, ERROR_ACCESS_DENIED, ERROR_ALREADY_EXISTS, HWND, LPARAM, RECT,
+    WPARAM,
+};
 use windows::Win32::System::Console::SetConsoleCtrlHandler;
+use windows::Win32::System::Threading::CreateMutexW;
 use windows::Win32::UI::HiDpi::{
     SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
 };
@@ -115,6 +119,12 @@ fn main() {
     }
 
     if has("--restore") {
+        // The journal belongs to a running daemon: restoring it would make the daemon
+        // jump between workspaces and leave it with no crash record.
+        if !claim_daemon_lock() {
+            eprintln!("{DAEMON_RUNNING}; nothing to restore (quit it with Alt+Shift+Q to restore its hidden windows)");
+            return;
+        }
         println!("restored {} window(s)", journal.restore_previous());
         return;
     }
@@ -203,11 +213,6 @@ fn main() {
         )
         .init();
 
-    let restored = journal.restore_previous();
-    if restored > 0 {
-        warn!("restored {restored} window(s) left hidden by a previous run");
-    }
-
     std::panic::set_hook(Box::new(|p| {
         journal::restore_from_global();
         error!("panic: {p}");
@@ -225,6 +230,17 @@ fn main() {
     if let Some(key) = value_after("--listen-child") {
         oneshot::run_listener(&key, &config_path);
         return;
+    }
+
+    // Full (daemon) mode from here on. Only one may run, and only it owns the journal:
+    // `--once` and the listener never hide windows, so they must not touch it.
+    if !claim_daemon_lock() {
+        error!("{DAEMON_RUNNING}; exiting");
+        return;
+    }
+    let restored = journal.restore_previous();
+    if restored > 0 {
+        warn!("restored {restored} window(s) left hidden by a previous run");
     }
 
     events::set_main_thread();
@@ -276,6 +292,34 @@ fn main() {
 
     drop(hooks);
     app.shutdown();
+}
+
+const DAEMON_LOCK: PCWSTR = w!("Local\\tiler-daemon");
+const DAEMON_RUNNING: &str = "tiler is already running in full mode";
+
+/// Take the per-session named mutex that marks a running daemon. Returns false if
+/// another process holds it. The handle is kept open until this process exits, when
+/// Windows releases it (also after a crash).
+fn claim_daemon_lock() -> bool {
+    let handle = unsafe { CreateMutexW(None, false, DAEMON_LOCK) };
+    let last = unsafe { GetLastError() };
+    match handle {
+        Ok(h) if last == ERROR_ALREADY_EXISTS => {
+            unsafe {
+                let _ = CloseHandle(h);
+            }
+            false
+        }
+        // Held by an elevated daemon: its mutex's default DACL denies us.
+        Err(e) if e.code() == ERROR_ACCESS_DENIED.to_hresult() => false,
+        Ok(_) => true, // deliberately left open for the process lifetime
+        Err(e) => {
+            warn!(
+                "could not create the single-instance mutex ({e}); not checking for another daemon"
+            );
+            true
+        }
+    }
 }
 
 pub(crate) fn load_config(path: &std::path::Path) -> Config {
