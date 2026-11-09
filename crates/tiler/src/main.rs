@@ -24,6 +24,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 
 use tiler_core::config::DEFAULT_CONFIG;
+use tiler_core::rules::{RuleAction, WindowInfo};
 use tiler_core::{Config, Rect};
 
 use crate::app::App;
@@ -305,21 +306,44 @@ unsafe extern "system" fn console_handler(_ctrl_type: u32) -> BOOL {
 
 fn list_windows() {
     let ctx = window::Ctx::new();
+    // Read the config without creating it, so rules can be checked before first run.
+    let path = dir_from_env("APPDATA").join("config.toml");
+    let config = match std::fs::read_to_string(&path) {
+        Ok(text) => Config::parse(&text).unwrap_or_else(|e| {
+            eprintln!(
+                "{}: {e}; showing results without your rules",
+                path.display()
+            );
+            Config::default()
+        }),
+        Err(_) => Config::default(),
+    };
+    let rules = config.rule_set();
     println!(
         "{:<10} {:<22} {:<24} {:<30} TITLE",
         "HWND", "RESULT", "EXE", "CLASS"
     );
     for h in window::top_level_windows() {
         let info = window::info(h);
-        let result = match window::classify(h, &info, &ctx) {
-            Ok(window::Kind::Tile) => "TILE".to_string(),
-            Ok(window::Kind::Float) => "FLOAT".to_string(),
-            Err(reason) => {
+        let rule = rules.evaluate(&WindowInfo {
+            exe: &info.exe,
+            class: &info.class,
+            title: &info.title,
+        });
+        let result = match (window::classify(h, &info, &ctx), rule) {
+            (Err(reason), _) => {
                 if reason == "not visible" {
                     continue; // hundreds of these; not interesting
                 }
                 format!("skip: {reason}")
             }
+            (Ok(_), Some(RuleAction::Laptop)) => "TILE on laptop (rule)".to_string(),
+            (Ok(_), Some(RuleAction::Tile)) => "TILE (rule)".to_string(),
+            (Ok(_), Some(RuleAction::Float)) => "FLOAT (rule)".to_string(),
+            (Ok(_), Some(RuleAction::Ignore)) => "ignore (rule)".to_string(),
+            (Ok(_), Some(RuleAction::Workspace(n))) => format!("TILE ws {} (rule)", n + 1),
+            (Ok(window::Kind::Tile), None) => "TILE".to_string(),
+            (Ok(window::Kind::Float), None) => "FLOAT".to_string(),
         };
         let title: String = info.title.chars().take(60).collect();
         println!(

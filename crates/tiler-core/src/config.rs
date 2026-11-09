@@ -99,10 +99,17 @@ inner = 8
 "alt+shift+q" = "quit"
 
 # Rules: the first match wins. Matchers: exe (file name, case-insensitive),
-# class (exact), title (regex). Actions: float, tile, ignore, workspace N.
+# class (exact), title (regex). Actions: float, tile, ignore, laptop, workspace N.
+#   laptop - always tile on the laptop screen (stack_monitor), even when another
+#            monitor has room. These windows don't use up slots on other monitors.
+# `tiler --list` shows each window's exe, class and title, and which rule it matches.
 [[rules]]
 title = "(?i)^picture.in.picture$"
 action = "float"
+
+# [[rules]]
+# exe = "ms-teams.exe"
+# action = "laptop"
 
 # [[rules]]
 # exe = "Spotify.exe"

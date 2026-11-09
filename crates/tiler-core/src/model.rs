@@ -377,6 +377,15 @@ impl<W: Copy + Eq + Hash + Debug> Model<W> {
         self.attach_with_overflow(w, monitor, requested, workspace.is_some())
     }
 
+    /// Rule `laptop`: tile on the stack monitor's visible workspace, whatever room the
+    /// other monitors have. It never takes a slot elsewhere; once the laptop holds more
+    /// than `max_tiles` windows it stacks as usual. With no stack monitor connected
+    /// (lid closed, desktop PC) this is a normal `add` on `fallback`.
+    pub fn add_to_laptop(&mut self, w: W, fallback: usize) -> Added {
+        let monitor = self.stack_monitor_index().unwrap_or(fallback);
+        self.add(w, monitor, None, false)
+    }
+
     /// Insert into a workspace by splitting a tile chosen by `insert_mode` (or as the root).
     /// Does not check capacity.
     fn attach(&mut self, w: W, loc: Loc) {
@@ -1211,6 +1220,38 @@ mod tests {
         m.remove(1);
         m.remove(2);
         assert!(!m.is_stacked(1, 0));
+    }
+
+    #[test]
+    fn laptop_rule_windows_skip_the_external_monitor() {
+        let mut m = laptop_setup();
+        // Pinned windows go to the laptop even though the external monitor is empty.
+        assert_eq!(m.add_to_laptop(1, 0).loc.monitor, 1);
+        assert_eq!(m.add_to_laptop(2, 0).loc.monitor, 1);
+        assert_eq!(m.tile_count(0, 0), 0);
+        // Normal windows still fill the external monitor first...
+        for w in 3..=5 {
+            assert_eq!(m.add(w, 0, None, false).loc.monitor, 0);
+        }
+        assert!(!m.is_stacked(1, 0));
+        // ...and overflow joins the pinned ones on the laptop (3 there: still tiles).
+        let a = m.add(6, 0, None, false);
+        assert_eq!((a.loc.monitor, a.overflowed), (1, true));
+        assert!(!m.is_stacked(1, 0));
+        // A pinned window opened later still goes to the laptop; 4 there = stacked.
+        assert_eq!(m.add_to_laptop(7, 0).loc.monitor, 1);
+        assert_eq!(m.tile_count(1, 0), 4);
+        assert!(m.is_stacked(1, 0));
+        assert_eq!(m.tile_count(0, 0), 3);
+    }
+
+    #[test]
+    fn laptop_rule_without_laptop_uses_own_monitor() {
+        let mut m = laptop_setup();
+        m.stack_monitor = None;
+        assert_eq!(m.add_to_laptop(1, 0).loc.monitor, 0);
+        m.stack_monitor = Some("UNPLUGGED".into());
+        assert_eq!(m.add_to_laptop(2, 0).loc.monitor, 0);
     }
 
     #[test]

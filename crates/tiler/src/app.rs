@@ -266,14 +266,18 @@ impl App {
         let (floating, workspace) = match rule {
             Some(RuleAction::Ignore) => return false,
             Some(RuleAction::Float) => (true, None),
-            Some(RuleAction::Tile) => (false, None),
+            Some(RuleAction::Tile | RuleAction::Laptop) => (false, None),
             Some(RuleAction::Workspace(n)) => (false, Some(n)),
             None => (kind == Kind::Float, None),
         };
         let monitor = monitors::of_window(h)
             .and_then(|m| self.model.monitor_index(&m.id))
             .unwrap_or(self.model.focused_monitor);
-        let added = self.model.add(h, monitor, workspace, floating);
+        let added = if rule == Some(RuleAction::Laptop) {
+            self.model.add_to_laptop(h, monitor)
+        } else {
+            self.model.add(h, monitor, workspace, floating)
+        };
         let loc = added.loc;
         info!(
             "manage {h:?} [{}] \"{}\" ({}) -> monitor {} workspace {}{}",

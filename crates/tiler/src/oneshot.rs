@@ -72,7 +72,7 @@ pub fn arrange(config: &Config) -> usize {
         });
         let tile = match rule {
             Some(RuleAction::Ignore | RuleAction::Float) => false,
-            Some(RuleAction::Tile | RuleAction::Workspace(_)) => true,
+            Some(RuleAction::Tile | RuleAction::Workspace(_) | RuleAction::Laptop) => true,
             None => kind == window::Kind::Tile,
         };
         if !tile {
@@ -81,7 +81,11 @@ pub fn arrange(config: &Config) -> usize {
         let monitor = monitors::of_window(h)
             .and_then(|m| model.monitor_index(&m.id))
             .unwrap_or(0);
-        model.add(h, monitor, None, false);
+        if rule == Some(RuleAction::Laptop) {
+            model.add_to_laptop(h, monitor);
+        } else {
+            model.add(h, monitor, None, false);
+        }
     }
 
     let layout = model.visible_layout();

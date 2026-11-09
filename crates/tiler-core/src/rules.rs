@@ -11,7 +11,7 @@ pub struct RuleSpec {
     pub class: Option<String>,
     /// Regex matched against the window title.
     pub title: Option<String>,
-    /// "float", "tile", "ignore" or "workspace N".
+    /// "float", "tile", "ignore", "laptop" or "workspace N".
     pub action: String,
 }
 
@@ -25,6 +25,8 @@ pub enum RuleAction {
     Ignore,
     /// Tile on this workspace (0-based) of the window's monitor.
     Workspace(usize),
+    /// Tile on the laptop screen (the stack monitor), even if other monitors have room.
+    Laptop,
 }
 
 #[derive(Debug)]
@@ -91,6 +93,7 @@ fn parse_action(s: &str) -> Result<RuleAction, String> {
         ["float"] => Ok(RuleAction::Float),
         ["tile"] => Ok(RuleAction::Tile),
         ["ignore"] => Ok(RuleAction::Ignore),
+        ["laptop"] => Ok(RuleAction::Laptop),
         ["workspace", n] => n
             .parse::<usize>()
             .ok()
@@ -136,6 +139,20 @@ mod tests {
             Some(RuleAction::Float)
         );
         assert_eq!(rs.evaluate(&w("chrome.exe", "Inbox")), None);
+    }
+
+    #[test]
+    fn laptop_action() {
+        let rs = RuleSet::compile(&[spec(Some("ms-teams.exe"), None, None, " Laptop ")]).unwrap();
+        assert_eq!(
+            rs.evaluate(&WindowInfo {
+                exe: "MS-Teams.exe",
+                class: "x",
+                title: "Chat"
+            }),
+            Some(RuleAction::Laptop)
+        );
+        assert!(RuleSet::compile(&[spec(Some("a"), None, None, "laptop 2")]).is_err());
     }
 
     #[test]

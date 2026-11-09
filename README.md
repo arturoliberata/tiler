@@ -38,6 +38,33 @@ outer = 8
 inner = 8
 ```
 
+## Choosing which windows go on the laptop screen
+
+Add a rule to `config.toml` for each app you want on the laptop screen:
+
+```toml
+[[rules]]
+exe = "ms-teams.exe"
+action = "laptop"
+
+[[rules]]
+exe = "OUTLOOK.EXE"
+action = "laptop"
+```
+
+These windows always go on the laptop screen, even when the external monitor has room. They don't use up its 3 tiles, so other windows go there instead. If the laptop ends up with more than `max_tiles` windows, they stack as usual. When the laptop screen isn't connected, the windows stay on their current monitor.
+
+Rules can match on `exe`, `class` or `title` (a regex), and the first match wins. Run `tiler --list` to see each window's exe, class and title, and which rule it matches. For example, to keep only a specific Guidewire Studio window on the laptop:
+
+```toml
+[[rules]]
+exe = "java.exe"
+title = "(?i)server log"
+action = "laptop"
+```
+
+Put a `laptop` rule above any broader rule for the same app.
+
 ## If something goes wrong
 
 - `tiler --restore` brings back any windows that went missing.

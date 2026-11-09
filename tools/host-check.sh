@@ -11,7 +11,12 @@ set -euo pipefail
 src="$(cd "$(dirname "$0")/.." && pwd)"
 dst="${TMPDIR:-/tmp}/tiler-host-check"
 mkdir -p "$dst"
-rsync -a --delete --exclude target "$src/" "$dst/ws/"
+if command -v rsync >/dev/null; then
+  rsync -a --delete --exclude target "$src/" "$dst/ws/"
+else
+  rm -rf "$dst/ws" && mkdir -p "$dst/ws"
+  (cd "$src" && tar --exclude=./target -cf - .) | (cd "$dst/ws" && tar -xf -)
+fi
 
 python3 - "$dst/ws/Cargo.toml" <<'EOF'
 import sys
