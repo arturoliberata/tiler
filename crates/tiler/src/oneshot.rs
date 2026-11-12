@@ -19,7 +19,7 @@ use windows::Win32::Foundation::{CloseHandle, HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::System::Console::FreeConsole;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Registry::{
-    RegDeleteKeyValueW, RegSetKeyValueW, HKEY_CURRENT_USER, REG_SZ,
+    RegDeleteKeyValueW, RegGetValueW, RegSetKeyValueW, HKEY_CURRENT_USER, REG_SZ, RRF_RT_REG_SZ,
 };
 use windows::Win32::System::Threading::{
     CreateProcessW, CREATE_NO_WINDOW, DETACHED_PROCESS, PROCESS_INFORMATION, STARTUPINFOW,
@@ -40,6 +40,10 @@ const RUN_VALUE: PCWSTR = w!("tiler");
 /// Tried in order when no key is given. Windows 11 assigns almost every Win+letter;
 /// these two are the least used (Mixed Reality input switch, focus a Windows tip).
 const DEFAULT_KEYS: &[&str] = &["win+y", "win+j", "win+shift+t"];
+/// Right after logon Explorer is still starting and may briefly hold or contend for
+/// Win+ hotkeys, so a listener started from the Run key keeps trying for a while.
+const REGISTER_RETRY: Duration = Duration::from_secs(120);
+const REGISTER_STEP: Duration = Duration::from_secs(2);
 
 // ---------- arrange once ----------
 
@@ -159,14 +163,29 @@ pub fn pick_key(requested: Option<&str>) -> Result<String, String> {
     ))
 }
 
+pub fn listener_running() -> bool {
+    find_listener().is_some()
+}
+
 /// `tiler --listen [KEY]`: check the key, start a detached copy of ourselves, return.
-pub fn start_listener(requested: Option<&str>) -> Result<String, String> {
+///
+/// With `logon` (the Run-key entry written by `--autostart`) the key isn't checked
+/// here: at logon it may not be registrable yet, and the detached child retries it
+/// without keeping a console window open.
+pub fn start_listener(requested: Option<&str>, logon: bool) -> Result<String, String> {
     if find_listener().is_some() {
         return Err("a listener is already running (stop it with `tiler --stop`)".into());
     }
-    let key = pick_key(requested)?;
+    let key = match (logon, requested) {
+        (true, Some(k)) => {
+            hotkey::parse(k)?;
+            k.to_string()
+        }
+        _ => pick_key(requested)?,
+    };
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-    let mut cmd: Vec<u16> = format!("\"{}\" --listen-child {key}", exe.display())
+    let logon_flag = if logon { " --logon" } else { "" };
+    let mut cmd: Vec<u16> = format!("\"{}\" --listen-child {key}{logon_flag}", exe.display())
         .encode_utf16()
         .chain([0])
         .collect();
@@ -194,6 +213,11 @@ pub fn start_listener(requested: Option<&str>) -> Result<String, String> {
         let _ = CloseHandle(pi.hThread);
         let _ = CloseHandle(pi.hProcess);
     }
+    info!(
+        "started listener process {} for {key}{}",
+        pi.dwProcessId,
+        if logon { " (logon)" } else { "" }
+    );
     Ok(key)
 }
 
@@ -220,10 +244,14 @@ unsafe extern "system" fn listener_proc(
 
 /// The background process itself (`--listen-child KEY`). Re-reads the config on every
 /// key press, so edits take effect without restarting.
-pub fn run_listener(key: &str, config_path: &Path) {
+pub fn run_listener(key: &str, config_path: &Path, logon: bool) {
     unsafe {
         let _ = FreeConsole(); // in case we were started with a console (e.g. from the Run key)
     }
+    info!(
+        "listener process starting for {key}{}",
+        if logon { " (logon)" } else { "" }
+    );
     if find_listener().is_some() {
         warn!("listener already running; exiting");
         return;
@@ -235,9 +263,31 @@ pub fn run_listener(key: &str, config_path: &Path) {
             return;
         }
     };
-    if let Err(e) = unsafe { RegisterHotKey(None, 1, HOT_KEY_MODIFIERS(hk.mods), hk.vk) } {
-        warn!("could not register {key}: {e}");
-        return;
+    let mut waited = Duration::ZERO;
+    loop {
+        match unsafe { RegisterHotKey(None, 1, HOT_KEY_MODIFIERS(hk.mods), hk.vk) } {
+            Ok(()) => break,
+            Err(e) if waited < REGISTER_RETRY => {
+                if waited.is_zero() {
+                    warn!(
+                        "could not register {key} yet ({e}); retrying for up to {}s",
+                        REGISTER_RETRY.as_secs()
+                    );
+                }
+                std::thread::sleep(REGISTER_STEP);
+                waited += REGISTER_STEP;
+            }
+            Err(e) => {
+                warn!(
+                    "could not register {key} after {}s: {e}; giving up. Pick another key with `tiler --autostart ctrl+alt+t`",
+                    waited.as_secs()
+                );
+                return;
+            }
+        }
+    }
+    if !waited.is_zero() {
+        info!("registered {key} after {}s", waited.as_secs());
     }
     // A hidden window with a known class, so `tiler --stop` can find and close us.
     let created = unsafe {
@@ -300,7 +350,7 @@ pub fn stop_listener() -> bool {
 /// `tiler --autostart [KEY]`: start the listener at logon (per-user Run key).
 pub fn set_autostart(key: &str) -> Result<(), String> {
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-    let value: Vec<u16> = format!("\"{}\" --listen {key}", exe.display())
+    let value: Vec<u16> = format!("\"{}\" --listen {key} --logon", exe.display())
         .encode_utf16()
         .chain([0])
         .collect();
@@ -323,4 +373,26 @@ pub fn set_autostart(key: &str) -> Result<(), String> {
 
 pub fn clear_autostart() -> bool {
     unsafe { RegDeleteKeyValueW(HKEY_CURRENT_USER, RUN_KEY, RUN_VALUE) }.is_ok()
+}
+
+/// The command line `--autostart` stored in the Run key, if any.
+pub fn autostart_entry() -> Option<String> {
+    let mut buf = vec![0u16; 2048];
+    let mut size = (buf.len() * 2) as u32;
+    let r = unsafe {
+        RegGetValueW(
+            HKEY_CURRENT_USER,
+            RUN_KEY,
+            RUN_VALUE,
+            RRF_RT_REG_SZ,
+            None,
+            Some(buf.as_mut_ptr() as *mut _),
+            Some(&mut size),
+        )
+    };
+    if r.is_err() {
+        return None;
+    }
+    let len = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+    Some(String::from_utf16_lossy(&buf[..len]))
 }

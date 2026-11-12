@@ -22,6 +22,7 @@ Run it again after updating the code.
 | `tiler --listen` | Press **Win+Y** any time to arrange. Runs quietly in the background. |
 | `tiler --stop` | Stop the Win+Y listener. |
 | `tiler --autostart` | Start the Win+Y listener at every login. Undo with `tiler --no-autostart`. |
+| `tiler --status` | Is the listener running, and will it start at login? |
 
 If Win+Y is taken, it uses Win+J. To pick your own key: `tiler --listen ctrl+alt+t`
 

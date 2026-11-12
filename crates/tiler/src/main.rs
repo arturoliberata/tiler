@@ -81,6 +81,7 @@ USAGE: tiler [OPTION]
   --stop            stop the background listener
   --autostart [KEY] start the listener now and at every logon
   --no-autostart    remove it from logon
+  --status          is the listener running, is it set to start at logon, recent log lines
   --list            show every top-level window and whether it would be managed
   --monitors        show monitors, their device names, and which is the laptop screen
   --restore         show any windows a crashed run left hidden, then exit
@@ -113,6 +114,29 @@ fn main() {
     let data_dir = dir_from_env("LOCALAPPDATA");
     let journal = Journal::new(data_dir.join("hidden.json"));
 
+    // Set up logging before any command runs, so the listener started from the Run
+    // key at logon (which has no console anyone sees) still leaves a trace.
+    let level = if has("--verbose") {
+        LevelFilter::DEBUG
+    } else {
+        LevelFilter::INFO
+    };
+    let (file_writer, _guard) =
+        tracing_appender::non_blocking(tracing_appender::rolling::never(&data_dir, "tiler.log"));
+    tracing_subscriber::registry()
+        .with(
+            tracing_subscriber::fmt::layer()
+                .with_writer(file_writer)
+                .with_ansi(false)
+                .with_filter(level),
+        )
+        .with(
+            tracing_subscriber::fmt::layer()
+                .with_writer(std::io::stderr)
+                .with_filter(level),
+        )
+        .init();
+
     // All coordinates are physical pixels on every monitor.
     unsafe {
         let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
@@ -144,6 +168,10 @@ fn main() {
         }
         return;
     }
+    if has("--status") {
+        print_status(&data_dir);
+        return;
+    }
     if has("--no-autostart") {
         let removed = oneshot::clear_autostart();
         println!(
@@ -163,7 +191,11 @@ fn main() {
             "--listen"
         };
         let requested = value_after(flag);
-        let key = match oneshot::start_listener(requested.as_deref()) {
+        let logon = has("--logon");
+        if logon {
+            info!("started from logon: {}", args.join(" "));
+        }
+        let key = match oneshot::start_listener(requested.as_deref(), logon) {
             Ok(key) => {
                 println!("listening in the background: press {key} to arrange windows");
                 println!("stop with `tiler --stop`");
@@ -177,7 +209,7 @@ fn main() {
                 }
             }
             Err(e) => {
-                eprintln!("{e}");
+                error!("{e}");
                 return;
             }
         };
@@ -191,27 +223,6 @@ fn main() {
         }
         return;
     }
-
-    let level = if has("--verbose") {
-        LevelFilter::DEBUG
-    } else {
-        LevelFilter::INFO
-    };
-    let (file_writer, _guard) =
-        tracing_appender::non_blocking(tracing_appender::rolling::never(&data_dir, "tiler.log"));
-    tracing_subscriber::registry()
-        .with(
-            tracing_subscriber::fmt::layer()
-                .with_writer(file_writer)
-                .with_ansi(false)
-                .with_filter(level),
-        )
-        .with(
-            tracing_subscriber::fmt::layer()
-                .with_writer(std::io::stderr)
-                .with_filter(level),
-        )
-        .init();
 
     std::panic::set_hook(Box::new(|p| {
         journal::restore_from_global();
@@ -228,7 +239,7 @@ fn main() {
         return;
     }
     if let Some(key) = value_after("--listen-child") {
-        oneshot::run_listener(&key, &config_path);
+        oneshot::run_listener(&key, &config_path, has("--logon"));
         return;
     }
 
@@ -413,5 +424,42 @@ fn list_monitors() {
             "{i}  {:<14} {}x{} at ({}, {}){tag}",
             m.id, m.full.w, m.full.h, m.full.x, m.full.y
         );
+    }
+}
+
+/// `tiler --status`: what the owner needs to report when the listener didn't start.
+fn print_status(data_dir: &std::path::Path) {
+    println!(
+        "listener:  {}",
+        if oneshot::listener_running() {
+            "running"
+        } else {
+            "not running"
+        }
+    );
+    match oneshot::autostart_entry() {
+        None => println!("logon:     not set (run `tiler --autostart`)"),
+        Some(cmd) => {
+            println!("logon:     {cmd}");
+            let exe = cmd.trim_start_matches('"').split('"').next().unwrap_or("");
+            if !std::path::Path::new(exe).exists() {
+                println!("           that program no longer exists; run `tiler --autostart` again");
+            } else if let Ok(me) = std::env::current_exe() {
+                if !me.as_os_str().eq_ignore_ascii_case(exe) {
+                    println!("           (this is {})", me.display());
+                }
+            }
+            if !cmd.contains("--logon") {
+                println!("           written by an older version; run `tiler --autostart` again");
+            }
+        }
+    }
+    let log = data_dir.join("tiler.log");
+    println!("log:       {}", log.display());
+    if let Ok(text) = std::fs::read_to_string(&log) {
+        let lines: Vec<&str> = text.lines().collect();
+        for l in &lines[lines.len().saturating_sub(15)..] {
+            println!("  {l}");
+        }
     }
 }
